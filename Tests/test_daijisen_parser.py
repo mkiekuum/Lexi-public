@@ -200,7 +200,7 @@ class DaijisenParserTests(unittest.TestCase):
         self.assertIn("特殊記号＆文字", result["searchText"])
         self.assertIn("mystery", result["structured"]["unknownTags"])
 
-    def test_external_links_are_rendered_as_plain_text(self):
+    def test_external_links_preserve_explicit_destination(self):
         xml = """
         <見出G><headword class="見出">参照</headword></見出G>
         <解説G><MG><meaning><a href="https://example.invalid/">外部</a>。</meaning></MG></解説G>
@@ -209,9 +209,9 @@ class DaijisenParserTests(unittest.TestCase):
             path = write_xml(Path(directory), "100001", xml)
             result = PARSER.extract_entry(path, "100001-0000")
         segment = result["structured"]["sections"][0]["segments"][0]
-        self.assertEqual(segment["kind"], "text")
+        self.assertEqual(segment["kind"], "link")
         self.assertEqual(segment["text"], "外部")
-        self.assertFalse(segment.get("target"))
+        self.assertEqual(segment["target"], "https://example.invalid/")
 
     def test_inline_styles_and_explicit_breaks_survive_structured_parsing(self):
         xml = """
@@ -234,7 +234,7 @@ class DaijisenParserTests(unittest.TestCase):
         self.assertIn("subscript", styles["下"])
         self.assertTrue(any(segment["kind"] == "break" for segment in section["segments"]))
 
-    def test_related_links_and_image_captions_are_included_as_separate_sections(self):
+    def test_url_map_and_image_captions_are_included_as_separate_sections(self):
         xml = """
         <見出G><headword class="見出">図版語</headword></見出G>
         <解説G>
@@ -250,9 +250,9 @@ class DaijisenParserTests(unittest.TestCase):
             path = write_xml(Path(directory), "100001", xml)
             result = PARSER.extract_entry(path, "100001-0000")
         document = result["structured"]
-        related = [section for section in document["sections"] if section["kind"] == "related"]
+        related = [section for section in document["sections"] if section["kind"] in {"url", "location"}]
         illustrations = [section for section in document["sections"] if section["kind"] == "illustration"]
-        self.assertEqual(len(related), 2)
+        self.assertEqual([s["label"] for s in related], ["URL", "地図"])
         self.assertTrue(any(
             segment.get("target") == "100002"
             for section in related
@@ -261,6 +261,29 @@ class DaijisenParserTests(unittest.TestCase):
         self.assertEqual(len(illustrations), 1)
         self.assertIn("図の代替文字", illustrations[0]["text"])
         self.assertIn("図の説明。", illustrations[0]["text"])
+
+    def test_source_categories_and_safe_external_links(self):
+        xml = """<見出G><headword class="見出">検証</headword></見出G><解説G>
+        <MG><meaning class="C"><補足ロゴ>派生</補足ロゴ> 派生語</meaning></MG>
+        <MG><meaning class="C"><補足ロゴ>可能</補足ロゴ> 可能形</meaning></MG>
+        <MG><meaning class="C"><補足ロゴ>下接句</補足ロゴ> 用例句</meaning></MG>
+        <MG><meaning class="C"><補足ロゴ>補説</補足ロゴ> 説明</meaning></MG>
+        <MG><meaning class="C">分類不明の補足。</meaning></MG>
+        <MUrlG><補足ロゴ>URL</補足ロゴ><MUrl><MUrlTitle>公式</MUrlTitle><MUrlUrl><a href="https://example.org/">https://example.org/</a></MUrlUrl></MUrl>
+        <MUrl><MUrlTitle>不正</MUrlTitle><MUrlUrl><a href="javascript:alert(1)">不正リンク</a></MUrlUrl></MUrl></MUrlG>
+        <MLocationG><補足ロゴ>地図</補足ロゴ><MLocation><a href="map:ll=35.7,139.7&amp;z=16">地点</a></MLocation></MLocationG>
+        </解説G>"""
+        with tempfile.TemporaryDirectory() as directory:
+            path = write_xml(Path(directory), "100001", xml)
+            sections = PARSER.extract_entry(path, "100001-0000")["structured"]["sections"]
+        self.assertEqual([(s["kind"], s["label"]) for s in sections],
+                         [("derivation","派生"),("potential","可能"),("related","下接句"),("note","補説"),("supplement","補足"),("url","URL"),("location","地図")])
+        targets = [t.get("target") for s in sections for t in s["segments"] if t.get("target")]
+        self.assertIn("https://example.org/", targets)
+        self.assertIn("map:ll=35.7,139.7&z=16", targets)
+        self.assertFalse(any(t.startswith("javascript:") for t in targets))
+        self.assertEqual(sections[0]["text"], "派生語")
+        self.assertEqual(sections[5]["text"].splitlines()[0], "公式")
 
     def test_dictionary_display_markers_and_accent_label_are_structured(self):
         xml = """

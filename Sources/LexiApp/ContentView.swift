@@ -64,6 +64,13 @@ struct ContentView: View {
                         Divider()
                         LexiPopupRow("バックアップを作成…", symbol: "externaldrive.badge.timemachine") { model.saveBackup() }
                     }
+                    Button { model.showDictionarySettings = true } label: {
+                        LexiControlIcon(symbol: "book")
+                    }
+                    .buttonStyle(LexiControlStyle())
+                    .help("辞典設定")
+                    .accessibilityLabel("辞典設定")
+                    .accessibilityIdentifier("dictionarySourceSettingsButton")
                     Button {
                         model.appearance = model.appearance == "dark" ? "light" : "dark"
                     } label: {
@@ -108,6 +115,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.showMCPSettings) {
             MCPSettingsSheet(configuration: model.mcpConfiguration, isPresented: $model.showMCPSettings)
+        }
+        .sheet(isPresented: $model.showDictionarySettings) {
+            DictionarySourceSettingsSheet()
         }
         .sheet(item: $model.dictionaryChoice) { choice in
             DictionaryChoiceSheet(choice: choice)
@@ -787,6 +797,12 @@ struct EntryListRow: View {
         if entry.belongsToMultipleFolders {
             descriptions.append("所属フォルダ:\n" + folderNames.joined(separator: "\n"))
         }
+        if entry.duplicateCount > 1 {
+            descriptions.append("同名項目：\(entry.duplicateCount)件（別々の項目）")
+            for (id, count) in (entry.sameTitleInFolderCounts ?? [:]).sorted(by: { $0.key < $1.key }) {
+                descriptions.append("\(model.folderPath(id))：同名 \(count)件")
+            }
+        }
         return descriptions.joined(separator: "\n")
     }
 
@@ -801,7 +817,12 @@ struct EntryListRow: View {
                         .lexiFont(LexiTypography.body, weight: .medium)
                         .lineLimit(1)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                    Spacer(minLength: 0)
+                    if entry.belongsToMultipleFolders {
+                        badge("folder", count: entry.folderCount, label: "所属フォルダ")
+                    }
+                    if entry.duplicateCount > 1 {
+                        badge("square.on.square", count: entry.duplicateCount, label: "同名項目")
+                    }
                 }
                 .padding(.leading, 9)
                 .frame(maxWidth: .infinity, minHeight: LexiLayout.entryRowHeight, maxHeight: LexiLayout.entryRowHeight, alignment: .leading)
@@ -811,7 +832,7 @@ struct EntryListRow: View {
             .frame(maxWidth: .infinity, minHeight: LexiLayout.entryRowHeight, maxHeight: LexiLayout.entryRowHeight)
             .contentShape(Rectangle())
             .accessibilityIdentifier("entry-\(entry.id)")
-            .accessibilityLabel(DictionaryDisplayText.clean(entry.title) + (entry.belongsToMultipleFolders ? "、複数フォルダ、\(entry.folderCount)件" : ""))
+            .accessibilityLabel(DictionaryDisplayText.clean(entry.title) + (entry.belongsToMultipleFolders ? "、所属フォルダ、\(entry.folderCount)件" : "") + (entry.duplicateCount > 1 ? "、同名項目、\(entry.duplicateCount)件" : ""))
             .help(rowHelp)
             Button {
                 model.openMonokakidoSearch(DictionaryDisplayText.clean(entry.title), type: entry.type)
@@ -832,6 +853,17 @@ struct EntryListRow: View {
         }
         .frame(maxWidth: .infinity, minHeight: LexiLayout.entryRowHeight, maxHeight: LexiLayout.entryRowHeight)
         .contentShape(Rectangle())
+    }
+
+    private func badge(_ symbol: String, count: Int, label: String) -> some View {
+        HStack(spacing: 2) {
+            Image(systemName: symbol).font(.system(size: 10, weight: .medium))
+            Text(String(count)).monospacedDigit().font(.system(size: 10, weight: .medium))
+        }.foregroundStyle(LexiTheme.accent)
+            .padding(.horizontal, 4).padding(.vertical, 3)
+            .background(LexiTheme.subtleFill, in: RoundedRectangle(cornerRadius: 4))
+            .help("\(label)：\(count)件")
+            .accessibilityHidden(true)
     }
 
     private var folderNames: [String] {

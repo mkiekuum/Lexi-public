@@ -8,11 +8,25 @@ import json
 import re
 import sys
 import xml.etree.ElementTree as ET
+from urllib.parse import urlsplit
 from pathlib import Path
 from typing import Any
 
-PARSER_VERSION = "7"
+PARSER_VERSION = "8"
 LINK_TARGET = re.compile(r"^[0-9]{1,6}(?:-[0-9A-Fa-f]{4})?$")
+def valid_link_target(value: str) -> bool:
+    if LINK_TARGET.fullmatch(value):
+        return True
+    if re.fullmatch(r"map:ll=-?[0-9]+(?:\.[0-9]+)?,-?[0-9]+(?:\.[0-9]+)?(?:&z=[0-9]+)?", value):
+        return True
+    if any(c.isspace() or ord(c) < 32 for c in value):
+        return False
+    try:
+        url = urlsplit(value)
+        return url.scheme.lower() in {"http", "https"} and bool(url.hostname) and not url.username and not url.password
+    except ValueError:
+        return False
+
 DISPLAY_MARKERS = {
     "{hyoki-s}": "・",
     "{ZS:/}": "／",
@@ -46,7 +60,7 @@ STYLE_TAGS = {
     "sup": "superscript",
     "sub": "subscript",
 }
-BLOCK_TAGS = {"p", "div", "ul", "li", "SubMeaning", "MeanTR"}
+BLOCK_TAGS = {"p", "div", "ul", "li", "SubMeaning", "MeanTR", "MUrl", "MUrlTitle", "MUrlUrl", "MLocation", "MCaption"}
 
 
 def local_name(tag: str) -> str:
@@ -206,7 +220,7 @@ def _tokens(node: ET.Element, diagnostics: set[str]) -> list[dict[str, Any]]:
                 child_tag = local_name(child.tag)
                 if child_tag == "a":
                     href = child.attrib.get("href", "")
-                    target = href if href and LINK_TARGET.fullmatch(href) else link_target
+                    target = href if href and valid_link_target(href) else link_target
                     walk(child, styles, target)
                 else:
                     walk(child, styles, link_target)
@@ -233,7 +247,7 @@ def _tokens(node: ET.Element, diagnostics: set[str]) -> list[dict[str, Any]]:
             child_tag = local_name(child.tag)
             if child_tag == "a":
                 href = child.attrib.get("href", "")
-                internal_target = href if href and LINK_TARGET.fullmatch(href) else None
+                internal_target = href if href and valid_link_target(href) else None
                 walk(child, styles, internal_target or link_target)
             else:
                 walk(child, styles, link_target)
@@ -261,19 +275,28 @@ def _base_text(segments: list[dict[str, Any]]) -> str:
     ))
 
 
-def _section_kind(text: str, class_name: str) -> tuple[str, str]:
+SECTION_LABELS = {
+    "類語": "related", "関連語": "related", "同義語": "related",
+    "反対語": "related", "対義語": "related", "下接語": "related",
+    "下接句": "related", "語源": "etymology", "由来": "etymology",
+    "補説": "note", "注記": "note", "用法": "usage", "品詞": "metadata",
+    "派生": "derivation", "可能": "potential", "URL": "url",
+    "地図": "location", "アクセント": "metadata",
+}
+
+
+def _section_kind(text: str, class_name: str, node: ET.Element) -> tuple[str, str]:
+    # Supplement labels are explicit markup. Preserve even newly encountered labels.
+    source_label = next((clean_text("".join(child.itertext())) for child in node.iter()
+                         if local_name(child.tag) == "補足ロゴ"), "")
+    if source_label and clean_text(text).startswith(source_label):
+        return SECTION_LABELS.get(source_label, "supplement"), source_label
     compact = clean_text(text)
-    for label, kind in (
-        ("類語", "related"), ("関連語", "related"), ("同義語", "related"),
-        ("反対語", "related"), ("対義語", "related"), ("下接語", "related"),
-        ("語源", "etymology"), ("由来", "etymology"),
-        ("補説", "note"), ("注記", "note"), ("用法", "usage"),
-        ("品詞", "metadata"),
-    ):
+    for label, kind in SECTION_LABELS.items():
         if compact.startswith(label):
             return kind, label
     if class_name == "C":
-        return "related", ""
+        return "supplement", "補足"
     return "meaning", ""
 
 
@@ -344,6 +367,8 @@ def _build_document(selected: ET.Element, key: str, kind: str) -> dict[str, Any]
                 for child in node:
                     if local_name(child.tag) == "MG":
                         append_node(child, depth + 1)
+                    elif local_name(child.tag) in {"MImageG", "MLocationG", "MUrlG"} and any(local_name(c.tag) == "meaning" for c in node):
+                        append_node(child, depth)
             elif tag in {
                 "meaning", "用例", "explanation", "SubItem",
                 "MImageG", "MLocationG", "MUrlG",
@@ -377,12 +402,14 @@ def _build_document(selected: ET.Element, key: str, kind: str) -> dict[str, Any]
         text = _plain(segments)
         if not text:
             continue
-        if tag in {"MUrlG", "MLocationG"}:
-            section_kind, label = "related", ""
+        if tag == "MUrlG":
+            section_kind, label = "url", "URL"
+        elif tag == "MLocationG":
+            section_kind, label = "location", "地図"
         elif tag == "MImageG":
-            section_kind, label = "illustration", ""
+            section_kind, label = "illustration", "図版"
         else:
-            section_kind, label = _section_kind(text, content.attrib.get("class", ""))
+            section_kind, label = _section_kind(text, content.attrib.get("class", ""), content)
         number = ""
         if tag == "MG":
             rect = next(
@@ -404,13 +431,28 @@ def _build_document(selected: ET.Element, key: str, kind: str) -> dict[str, Any]
                     segments = segments[1:]
                     text = _plain(segments)
         if label and text.startswith(label):
-            text = text[len(label):].lstrip(" :：")
-            if segments:
-                first = segments[0].get("text", "")
-                if first.strip() == label:
+            text = text[len(label):].lstrip(" :：\n")
+            remaining = label
+            while segments and remaining:
+                token = segments[0]
+                if token.get("kind") == "break" or not token.get("text", "").strip():
                     segments = segments[1:]
-                elif first.startswith(label):
-                    segments[0] = dict(segments[0], text=first[len(label):].lstrip(" :："))
+                    continue
+                value = token.get("text", "")
+                trimmed = value.lstrip()
+                if remaining.startswith(trimmed):
+                    remaining = remaining[len(trimmed):]
+                    segments = segments[1:]
+                elif trimmed.startswith(remaining):
+                    rest = trimmed[len(remaining):].lstrip(" :：")
+                    segments[0] = dict(token, text=rest)
+                    if not rest:
+                        segments = segments[1:]
+                    remaining = ""
+                else:
+                    break
+            while segments and (segments[0].get("kind") == "break" or not segments[0].get("text", "").strip()):
+                segments = segments[1:]
         sections.append({
             "kind": "example" if kind == "example" else section_kind,
             "label": label,

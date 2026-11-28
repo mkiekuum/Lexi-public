@@ -100,7 +100,7 @@ struct DictionaryDocumentView: View {
         .section { display: grid; grid-template-columns: 1.6em minmax(0, 1fr); column-gap: .8em; margin: 12px 0; }
         .section.unnumbered { grid-template-columns: minmax(0, 1fr); column-gap: 0; }
         .unnumbered .number { display: none; }
-        .unnumbered .section-text { grid-column: 1; }
+        .unnumbered .section-text, .unnumbered .label { grid-column: 1; }
         .number { color: \(accent); font-weight: 600; text-align: right; }
         .label { color: \(secondary); font-size: \(12 + fontSizeOffset)px; grid-column: 2; }
         .section-text { grid-column: 2; }
@@ -146,7 +146,7 @@ struct DictionaryDocumentView: View {
         let label = section.label.isEmpty ? "" : "<div class=\"label\">\(escape(section.label))</div>"
         let text = render(section.segments, fallback: section.text, highlightSourceID: highlightSourceID)
         let indentation = Double(max(0, min(section.depth ?? 0, 6))) * 1.2
-        let unnumbered = number.isEmpty && section.label.isEmpty ? " unnumbered" : ""
+        let unnumbered = number.isEmpty ? " unnumbered" : ""
         return """
         <div class="section\(unnumbered)" style="margin-left:\(indentation)em">
           <div class="number">\(escape(number))</div>
@@ -270,10 +270,36 @@ struct DictionaryDocumentView: View {
     }
 
     private func internalLink(_ target: String?, title: String, content: String) -> String {
-        guard let target,
-              target.range(of: "^[0-9]{1,6}(?:-[0-9A-Fa-f]{4})?$", options: .regularExpression) != nil
-        else { return content }
-        return searchLink(title: title, content: content)
+        guard let target else { return content }
+        if target.range(of: "^[0-9]{1,6}(?:-[0-9A-Fa-f]{4})?$", options: .regularExpression) != nil {
+            return searchLink(title: title, content: content)
+        }
+        if let url = Self.externalURL(target) {
+            return "<a href=\"\(escape(url.absoluteString))\">\(content)</a>"
+        }
+        return content
+    }
+
+    static func externalURL(_ value: String) -> URL? {
+        if value.hasPrefix("map:ll=") {
+            let parts = value.dropFirst("map:ll=".count).split(separator: "&", omittingEmptySubsequences: false)
+            guard let first = parts.first else { return nil }
+            let coords = first.split(separator: ",")
+            guard coords.count == 2, let lat = Double(coords[0]), let lon = Double(coords[1]),
+                  lat.isFinite, lon.isFinite, (-90...90).contains(lat), (-180...180).contains(lon) else { return nil }
+            var components = URLComponents()
+            components.scheme = "https"; components.host = "maps.apple.com"
+            components.queryItems = [URLQueryItem(name: "ll", value: "\(lat),\(lon)")]
+            if parts.count == 2, parts[1].hasPrefix("z="), let zoom = Int(parts[1].dropFirst(2)), (1...21).contains(zoom) {
+                components.queryItems?.append(URLQueryItem(name: "z", value: String(zoom)))
+            } else if parts.count != 1 { return nil }
+            return components.url
+        }
+        guard !value.contains(where: { $0.isWhitespace || $0.isNewline }),
+              let parts = URLComponents(string: value), let scheme = parts.scheme?.lowercased(),
+              ["https", "http"].contains(scheme), let host = parts.host, !host.isEmpty,
+              parts.user == nil, parts.password == nil else { return nil }
+        return parts.url
     }
 
     private func searchLink(title: String, content: String) -> String {
@@ -396,6 +422,12 @@ private struct DictionaryWebView: NSViewRepresentable {
             }
             if url.scheme == "about" {
                 decisionHandler(.allow)
+                return
+            }
+            if navigationAction.navigationType == .linkActivated,
+               let external = DictionaryDocumentView.externalURL(url.absoluteString) {
+                NSWorkspace.shared.open(external)
+                decisionHandler(.cancel)
                 return
             }
             guard navigationAction.navigationType == .linkActivated,

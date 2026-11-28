@@ -2,18 +2,22 @@ import XCTest
 @testable import LexiCore
 
 final class LexiCoreTests: XCTestCase {
+    private func testDictionaryRoot() throws -> URL {
+        guard let path = ProcessInfo.processInfo.environment["LEXI_DICTIONARY_TEST_ROOT"] else {
+            throw XCTSkip("Set LEXI_DICTIONARY_TEST_ROOT to test the optional real dictionary")
+        }
+        return try DictionarySourceConfiguration.resolve(URL(fileURLWithPath: path))
+    }
     private func fresh() throws -> LexiStore {
         try LexiStore(url:FileManager.default.temporaryDirectory.appendingPathComponent("lexi-test-\(UUID().uuidString).sqlite"))
     }
     func testMultipleDictionaryChoicesKeepOriginalNoteAndMembershipAndRollback() async throws {
-        guard FileManager.default.fileExists(atPath: LexiPaths.dictionaryContentsURL.path) else {
-            throw XCTSkip("Optional local dictionary not installed")
-        }
+        let root = try testDictionaryRoot()
         let store = try fresh()
         let folder = try store.createFolder(name: "辞典候補")
         let entry = try store.createEntry(title: "端緒", note: "原ノート")
         try store.addFolder(folder.id, to: entry.id)
-        let provider = LocalDictionaryProvider(parserURL: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Scripts/daijisen_parser.py"))
+        let provider = LocalDictionaryProvider(contentsDirectory: root.appendingPathComponent("Contents"), parserURL: URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Scripts/daijisen_parser.py"))
         let matches = try await provider.matches(for: entry)
         XCTAssertEqual(matches.count, 2)
         var pairs: [(DictionaryMatch, DictionarySourceResult)] = []
@@ -43,7 +47,7 @@ final class LexiCoreTests: XCTestCase {
     }
 
     func testDictionaryRefreshWithoutSourceID() async throws {
-        let root = LexiPaths.localDictionaryDirectoryURL.appendingPathComponent("DAIJISEN.J")
+        let root = try testDictionaryRoot()
         let contents = root.appendingPathComponent("Contents")
         let parser = URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("Scripts/daijisen_parser.py")
         guard FileManager.default.fileExists(atPath: contents.path) else { throw XCTSkip("ローカル辞典がありません") }
@@ -95,6 +99,28 @@ final class LexiCoreTests: XCTestCase {
         } catch DictionarySourceError.ambiguousTitle(let candidates) {
             XCTAssertEqual(candidates.count, 4)
         }
+    }
+
+    func testMultiplicityIndependentOfCurrentSearchAndFolderScope() throws {
+        let store = try fresh()
+        let a = try store.createFolder(name: "A")
+        let b = try store.createFolder(name: "B")
+        let first = try store.createEntry(title: "同名", note: "first")
+        let second = try store.createEntry(title: "同名", note: "second")
+        let third = try store.createEntry(title: "同名", note: "third")
+        try store.addFolder(a.id, to: first.id)
+        try store.addFolder(b.id, to: first.id)
+        try store.addFolder(a.id, to: second.id)
+        try store.addFolder(b.id, to: third.id)
+        let all = try store.listEntrySummaries()
+        XCTAssertEqual(all.count, 3)
+        let filtered = try store.listEntrySummaries(EntrySummaryQuery(query: "first", folderID: a.id))
+        XCTAssertEqual(filtered.count, 1)
+        XCTAssertEqual(filtered.first?.duplicateCount, 3)
+        XCTAssertEqual(filtered.first?.folderCount, 2)
+        XCTAssertEqual(filtered.first?.sameTitleInFolderCounts, [a.id: 2, b.id: 2])
+        XCTAssertEqual(try store.getEntry(second.id).note, "second")
+        XCTAssertEqual(try store.getEntry(third.id).note, "third")
     }
 
     func testRenameEntryConflictAndPreservesOtherFields() async throws {
@@ -236,15 +262,15 @@ final class LexiCoreTests: XCTestCase {
             1
         )
     }
-    func testLocalDictionaryPrefersUnifiedDesktopPackageWhenPresent() throws {
-        let expected = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop/Lexi/Dictionary", isDirectory: true)
-        guard FileManager.default.fileExists(
-            atPath: expected.appendingPathComponent("DAIJISEN.J", isDirectory: true).path
-        ) else { throw XCTSkip("統合辞典ディレクトリが未配置です") }
-        XCTAssertEqual(LexiPaths.localDictionaryDirectoryURL.standardizedFileURL, expected.standardizedFileURL)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: LexiPaths.dictionaryContentsURL.path))
-        XCTAssertTrue(FileManager.default.fileExists(atPath: LexiPaths.dictionaryParserURL.path))
+    func testDictionaryFolderConfigurationIsIndependentOfDesktop() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = root.appendingPathComponent("Notebook.sqlite")
+        let settings = DictionarySourceConfiguration()
+        try settings.save(for: database)
+        XCTAssertNil(try DictionarySourceConfiguration.load(for: database).root)
+        XCTAssertFalse(try DictionarySourceConfiguration.load(for: database).available)
+        XCTAssertThrowsError(try DictionarySourceConfiguration.resolve(root))
     }
     func testManyToManyFoldersAndNestedFiltering() throws {
         let store = try fresh()
@@ -836,8 +862,7 @@ final class LexiCoreTests: XCTestCase {
     }
 
     func testReadOnlyProviderParsesExactInstalledIdiomAndExampleWhenAvailable() async throws {
-        let root = LexiPaths.localDictionaryDirectoryURL
-            .appendingPathComponent("DAIJISEN.J", isDirectory: true)
+        let root = try testDictionaryRoot()
         let contents = root.appendingPathComponent("Contents",isDirectory:true)
         let parser = URL(fileURLWithPath:FileManager.default.currentDirectoryPath)
             .appendingPathComponent("Scripts/daijisen_parser.py")
@@ -1077,7 +1102,7 @@ final class LexiCoreTests: XCTestCase {
         let example = try XCTUnwrap(all.entries.first(where: { $0.title == "非礼を詫びる" }))
         let original = try await service.getEntry(example.id)
         let provider = LocalDictionaryProvider(
-            contentsDirectory: LexiPaths.dictionaryContentsURL,
+            contentsDirectory: try testDictionaryRoot().appendingPathComponent("Contents"),
             parserURL: URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("Scripts/daijisen_parser.py")
         )

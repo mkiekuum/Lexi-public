@@ -174,6 +174,10 @@ public struct EntrySummary: Codable, Identifiable, Equatable, Sendable {
     public let hasDictionary: Bool
     public let hasNote: Bool
 
+    public var sameTitleCount: Int? = nil
+    public var sameTitleInFolderCounts: [String: Int]? = nil
+    public var duplicateCount: Int { sameTitleCount ?? 1 }
+
     public var folderCount: Int { folderIDs.count }
     public var belongsToMultipleFolders: Bool { folderCount > 1 }
 
@@ -404,7 +408,21 @@ public enum LexiError: Error, LocalizedError {
 }
 
 public enum LexiPaths {
+    public static var enclosingApplication: Bundle? {
+        if Bundle.main.bundleURL.pathExtension == "app" { return Bundle.main }
+        var location = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL.resolvingSymlinksInPath()
+        for _ in 0..<8 {
+            if location.pathExtension == "app", let bundle = Bundle(url: location) { return bundle }
+            location = location.deletingLastPathComponent()
+        }
+        return nil
+    }
     public static var databaseURL: URL {
+        if enclosingApplication?.bundleIdentifier == "app.local.lexi.preview360" {
+            return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Lexi-3.6.0-Preview", isDirectory: true)
+                .appendingPathComponent("Lexi.sqlite")
+        }
         if let configuredPath = ProcessInfo.processInfo.environment["LEXI_DATABASE_PATH"],
            !configuredPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return URL(fileURLWithPath: configuredPath)
@@ -416,28 +434,7 @@ public enum LexiPaths {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return base.appendingPathComponent("Lexi", isDirectory: true).appendingPathComponent("Dictionary", isDirectory: true)
     }
-    public static var localRootURL: URL {
-        FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop/Lexi", isDirectory: true)
-    }
-    public static var localDictionaryDirectoryURL: URL {
-        if let path = ProcessInfo.processInfo.environment["LEXI_DICTIONARY_PATH"], !path.isEmpty {
-            return URL(fileURLWithPath: path, isDirectory: true)
-        }
-        let managed = localRootURL.appendingPathComponent("Dictionary", isDirectory: true)
-        if FileManager.default.fileExists(atPath: managed.appendingPathComponent("DAIJISEN.J").path) {
-            return managed
-        }
-        return FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Desktop/LexiData/Dictionary", isDirectory: true)
-    }
-    public static var dictionaryContentsURL: URL {
-        localDictionaryDirectoryURL
-            .appendingPathComponent("DAIJISEN.J/Contents", isDirectory: true)
-    }
-    public static var dictionaryParserURL: URL {
-        localDictionaryDirectoryURL.appendingPathComponent("daijisen_parser.py")
-    }
+
 }
 
 public enum JapaneseSearch {

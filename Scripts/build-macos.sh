@@ -3,8 +3,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-VERSION="3.5.0"
-BUILD_NUMBER="350"
+VERSION="3.6.0"
+BUILD_NUMBER="360"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "macOS上で実行してください。" >&2; exit 1
@@ -22,9 +22,7 @@ if pgrep -x LexiDesktop >/dev/null 2>&1; then
   exit 1
 fi
 
-# The older SwiftPM native backend avoids a known Swift 6.4 dependency-file build
-# problem on the user's Xcode toolchain. Remove this switch once it is fixed upstream.
-SWIFT_FLAGS=(--build-system native --jobs 2 --scratch-path .build-ui-240)
+SWIFT_FLAGS=(--build-system native --jobs 2 --scratch-path .build)
 
 printf '\n[1/7] Swift自動テストを実行しています…\n'
 swift test "${SWIFT_FLAGS[@]}"
@@ -39,20 +37,15 @@ printf '\n[3/7] Swift/Python/MCP回帰テストを実行しています…\n'
 LEXI_MCP_BINARY="$MCP" python3 -m unittest discover -s Tests -p 'test_*.py'
 
 INSTALL_ROOT="$HOME/Desktop/Lexi"
-DICTIONARY="$INSTALL_ROOT/Dictionary/DAIJISEN.J/Contents"
-HEADLINES="$INSTALL_ROOT/Dictionary/DAIJISEN.J/Headline"
-PARSER="$INSTALL_ROOT/Dictionary/daijisen_parser.py"
-mkdir -p "$INSTALL_ROOT/Dictionary"
+mkdir -p "$INSTALL_ROOT"
 
 APP="$INSTALL_ROOT/Lexi.app"
 STAGE="$INSTALL_ROOT/.Lexi-install-$$.app"
-PARSER_STAGE="$INSTALL_ROOT/Dictionary/.daijisen_parser-$$.py"
 BACKUP=""
 JSON_SOURCE_DIR=""
 cleanup() {
   if [[ -d "$STAGE" ]]; then rm -rf "$STAGE"; fi
   if [[ -n "$JSON_SOURCE_DIR" && -d "$JSON_SOURCE_DIR" ]]; then rm -rf "$JSON_SOURCE_DIR"; fi
-  if [[ -f "$PARSER_STAGE" ]]; then rm -f "$PARSER_STAGE"; fi
 }
 trap cleanup EXIT
 printf '\n[4/7] 新しい.appを一時フォルダで作成しています…\n'
@@ -86,6 +79,8 @@ if command -v iconutil >/dev/null 2>&1; then
   fi
 fi
 cp "$ROOT/Assets/LexiEmblem.png" "$STAGE/Contents/Resources/LexiEmblem.png"
+cp "$ROOT/Scripts/daijisen_parser.py" "$STAGE/Contents/Resources/daijisen_parser.py"
+cp "$ROOT/Scripts/repair_dictionary_sections.py" "$STAGE/Contents/Resources/repair_dictionary_sections.py"
 plutil -lint "$STAGE/Contents/Info.plist"
 
 printf '\n[5/7] 署名とパッケージを確認しています…\n'
@@ -141,30 +136,24 @@ else
 fi
 
 printf '\n[7/7] デスクトップにインストールしています…\n'
-cp "$ROOT/Scripts/daijisen_parser.py" "$PARSER_STAGE"
-python3 "$PARSER_STAGE" --help >/dev/null
-mv "$PARSER_STAGE" "$PARSER"
-if [[ -d "$DICTIONARY" && -s "$HEADLINES/headline.headlinestore.tsv" && -s "$HEADLINES/short-headline.headlinestore.tsv" ]]; then
-  SOURCE_VERSION="$(python3 - "$INSTALL_ROOT/Dictionary/manifest.json" <<'PYVERSION'
-import json, sys
+# Keep existing user-selected dictionary files untouched. Install the parser with Lexi itself.
+mkdir -p "$HOME/.local/share/lexi"
+cp "$ROOT/Scripts/daijisen_parser.py" "$HOME/.local/share/lexi/daijisen_parser.py"
+python3 "$HOME/.local/share/lexi/daijisen_parser.py" --help >/dev/null
+# Migrate only an already-existing legacy dictionary, without modifying its contents.
+python3 - "$INSTALL_ROOT/Dictionary/DAIJISEN.J" "$DATA.dictionary-source.json" <<'PYCONFIG'
 from pathlib import Path
-p=Path(sys.argv[1])
-print(json.loads(p.read_text()).get("sourceVersion", "not-provided") if p.exists() else "not-provided")
-PYVERSION
-)"
-  python3 "$ROOT/Scripts/manage_local_dictionary.py" create --root "$INSTALL_ROOT/Dictionary" --source-version "$SOURCE_VERSION" >/dev/null
-  python3 "$ROOT/Scripts/manage_local_dictionary.py" verify --root "$INSTALL_ROOT/Dictionary" >/dev/null
-fi
-mkdir -p "$INSTALL_ROOT/Backups" "$INSTALL_ROOT/Tools"
-if [[ -f "$INSTALL_ROOT/Tools/manage_local_dictionary.py" ]] \
-  && ! cmp -s "$ROOT/Scripts/manage_local_dictionary.py" "$INSTALL_ROOT/Tools/manage_local_dictionary.py"; then
-  cp "$INSTALL_ROOT/Tools/manage_local_dictionary.py" \
-    "$INSTALL_ROOT/Backups/manage_local_dictionary-before-v${VERSION}-$(date '+%Y%m%d-%H%M%S')-$$.py"
-fi
-cp "$ROOT/Scripts/manage_local_dictionary.py" "$INSTALL_ROOT/Tools/manage_local_dictionary.py"
+import sys, json, os
+root, config = map(Path, sys.argv[1:])
+if not config.exists() and (root / "Contents").is_dir() and all((root / "Headline" / name).is_file() for name in ["headline.headlinestore.tsv", "short-headline.headlinestore.tsv"]):
+    config.parent.mkdir(parents=True, exist_ok=True)
+    temp = config.with_suffix(".tmp")
+    temp.write_text(json.dumps({"directory": str(root.resolve())}), encoding="utf-8")
+    os.replace(temp, config)
+PYCONFIG
 if [[ -e "$APP" ]]; then
-  mkdir -p "$INSTALL_ROOT/开发与备份/Backups"
-  BACKUP="$INSTALL_ROOT/开发与备份/Backups/Lexi-prev-$(date '+%Y%m%d-%H%M%S')-$$.app"
+  mkdir -p "$HOME/Documents/Lexi Backups"
+  BACKUP="$HOME/Documents/Lexi Backups/Lexi-prev-$(date '+%Y%m%d-%H%M%S')-$$.app"
   mv "$APP" "$BACKUP"
 fi
 if ! mv "$STAGE" "$APP"; then
@@ -179,14 +168,12 @@ if command -v codesign >/dev/null 2>&1; then
   codesign --force --sign - "$HOME/.local/bin/lexi-mcp"
   codesign --verify "$HOME/.local/bin/lexi-mcp"
 fi
-if [[ -e "$HOME/.local/bin/lexi" ]]; then rm -f "$HOME/.local/bin/lexi"; fi
 echo
 echo "Lexi v${VERSION} をインストールしました。"
 echo "アプリ: $APP"
 echo "ローカル MCP: $HOME/.local/bin/lexi-mcp"
 echo "データ: $DATA"
-echo "独立辞典: $DICTIONARY"
-echo "見出し索引: $HEADLINES"
+echo "辞典設定: アプリ内で参照フォルダを選択"
 if [[ -n "$BACKUP" ]]; then echo "以前のアプリ: $BACKUP"; fi
 LEGACY_APP="$HOME/Desktop/Lexi.app"
 if [[ -L "$LEGACY_APP" ]]; then
@@ -194,8 +181,8 @@ if [[ -L "$LEGACY_APP" ]]; then
     echo "旧アプリのパスが別のリンク先を参照しているため変更しません: $LEGACY_APP" >&2
   fi
 elif [[ -e "$LEGACY_APP" ]]; then
-  LEGACY_BACKUP="$INSTALL_ROOT/开发与备份/Backups/Lexi-legacy-location-$(date '+%Y%m%d-%H%M%S')-$$.app"
-  mkdir -p "$INSTALL_ROOT/开发与备份/Backups"
+  LEGACY_BACKUP="$HOME/Documents/Lexi Backups/Lexi-legacy-location-$(date '+%Y%m%d-%H%M%S')-$$.app"
+  mkdir -p "$HOME/Documents/Lexi Backups"
   mv "$LEGACY_APP" "$LEGACY_BACKUP"
   ln -s "$APP" "$LEGACY_APP"
   echo "旧アプリを保存しました: $LEGACY_BACKUP"

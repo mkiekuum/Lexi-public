@@ -193,6 +193,9 @@ final class LexiViewModel: ObservableObject {
     private var pollingExternalChanges = false
     private var externalRefreshPending = false
     private let dictionaryProvider: any DictionaryContentProvider
+    @Published private(set) var dictionarySource = DictionarySourceConfiguration()
+    @Published var showDictionarySettings = false
+    @Published var dictionarySourceError: String?
     private var lastLoadedQuery: EntrySummaryQuery?
     private var preferredSelectionAfterRefresh: String?
     private var refreshGeneration = 0
@@ -207,9 +210,10 @@ final class LexiViewModel: ObservableObject {
     private var pendingNavigation: (() -> Void)?
     private var selectionAnchorID: String?
 
-    init(databaseURL: URL = LexiPaths.databaseURL, dictionaryProvider: any DictionaryContentProvider = DictionaryRegistry()) {
+    init(databaseURL: URL = LexiPaths.databaseURL, dictionaryProvider: (any DictionaryContentProvider)? = nil) {
         self.databaseURL = databaseURL
-        self.dictionaryProvider = dictionaryProvider
+        self.dictionaryProvider = dictionaryProvider ?? ConfiguredDictionaryProvider(databaseURL: databaseURL)
+        self.dictionarySource = (try? DictionarySourceConfiguration.load(for: databaseURL)) ?? .init()
         if let preferences = try? LexiPreferences.load(for: databaseURL) {
             self.appearance = preferences.appearance.rawValue
             self.fontFamily = preferences.fontFamily
@@ -220,6 +224,35 @@ final class LexiViewModel: ObservableObject {
         Task { await openDataService() }
     }
 
+    func chooseDictionarySource() {
+        guard !dictionaryOperationRunning else { return }
+        dictionarySourceError = nil
+        let panel = NSOpenPanel()
+        panel.title = "辞典フォルダを選択"
+        panel.prompt = "接続"
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        if let root = dictionarySource.root { panel.directoryURL = root.deletingLastPathComponent() }
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let selected = try DictionarySourceConfiguration.resolve(url)
+            let next = DictionarySourceConfiguration(directory: selected.path)
+            try next.save(for: databaseURL)
+            dictionarySource = next
+            dictionaryProgressText = nil
+        } catch { dictionarySourceError = error.localizedDescription }
+    }
+    func disconnectDictionarySource() {
+        guard !dictionaryOperationRunning else { return }
+        dictionarySourceError = nil
+        do {
+            let next = DictionarySourceConfiguration()
+            try next.save(for: databaseURL)
+            dictionarySource = next
+            dictionaryProgressText = nil
+        } catch { dictionarySourceError = error.localizedDescription }
+    }
     var mcpConfiguration: String {
         (try? LexiPreferences.mcpConfiguration(for: databaseURL)) ?? ""
     }
@@ -241,6 +274,7 @@ final class LexiViewModel: ObservableObject {
                     setFontSizeOffset(settings.fontSizeOffset ?? 0)
                     loadingPreferences = false
                 }
+                if let source = try? DictionarySourceConfiguration.load(for: databaseURL), source != dictionarySource { dictionarySource = source }
                 // Do not replace an active note draft when an AI changes the database.
                 guard externalRefreshPending, !noteEditing else { return }
                 externalRefreshPending = false
@@ -642,6 +676,13 @@ final class LexiViewModel: ObservableObject {
 
     func updateDictionary(for ids: [String]) {
         guard let service, !ids.isEmpty, !dictionaryOperationRunning else { return }
+        let configured = dictionaryProvider is ConfiguredDictionaryProvider
+        let initialSource = try? DictionarySourceConfiguration.load(for: databaseURL)
+        if configured && initialSource?.available != true {
+            if let initialSource { dictionarySource = initialSource }
+            showDictionarySettings = true
+            return
+        }
         dictionaryOperationRunning = true
         dictionaryProgressText = "辞典データを確認しています…"
         dictionaryTask = Task {
@@ -653,6 +694,10 @@ final class LexiViewModel: ObservableObject {
             var failures: [String] = []
             for (index, id) in ids.enumerated() {
                 guard !Task.isCancelled else { break }
+                if configured && (try? DictionarySourceConfiguration.load(for: databaseURL)) != initialSource {
+                    failures.append("辞典の接続先が変更されたため中止しました。")
+                    break
+                }
                 do {
                     let entry = try await service.getEntry(id)
                     dictionaryProgressText = "辞典内容を更新しています… \(index + 1)/\(ids.count)"

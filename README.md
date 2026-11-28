@@ -1,39 +1,29 @@
-# Lexi 3.5.0
+# Lexi 3.6.0
 
-<img src="Assets/LexiEmblem.png" width="96" alt="Lexi logo">
+<img src="Assets/LexiEmblem.png" width="80" alt="Lexi">
 
-A local-first Japanese vocabulary notebook for macOS, written in SwiftUI with SQLite.
+Local-first Japanese vocabulary notebook for macOS.
 
-- Independent headwords, idioms and examples, notes, folders and multi-selection.
-- Exact dictionary-title matching, ambiguity previews, multiple candidate selection and batch skipping.
-- Structured dictionary rendering with ruby, grammar markers and subtle example highlighting.
-- Global font and size settings, light/dark themes, filters and local MCP (stdio).
-- Portable JSON export/import with dictionary reference IDs and content; existing notes are preserved.
+- Headwords, idioms, examples, notes, folders and duplicate indicators.
+- Exact local dictionary matching, structured definitions and JSON import/export.
+- Local MCP for vocabulary, folders, backups and dictionary connections.
 
 ## Install
 
-Download the Apple silicon app-only ZIP from Releases, extract it, and move Lexi.app into a folder of your choice. The app is ad-hoc signed, not notarized by Apple; macOS may require opening it via its normal security confirmation. No dictionary or user data is included.
+Download the Apple silicon ZIP from Releases, extract and open Lexi.app. Requires macOS 14+, with Python 3 for dictionary lookup. The app is ad-hoc signed, not notarized. Intel builds have not been tested.
 
-macOS 14 or later is the declared minimum; the binary was built and tested on an Apple silicon Mac. Intel binary and older-macOS compatibility have not been tested.
+Select a lawfully obtained compatible Daijisen XML/TSV folder using the book icon. The folder needs Contents and Headline, with headline.headlinestore.tsv and short-headline.headlinestore.tsv. No dictionary data is bundled; saved definitions and notes remain available offline.
 
-To build from source, install Xcode with the macOS SDK and Python 3, quit Lexi, then run:
+Data: ~/Library/Application Support/Lexi/Lexi.sqlite.
 
-```sh
-bash install.command
-```
+## MCP
 
-The installer tests and builds the GUI and MCP executable, installs to ~/Desktop/Lexi, and backs up existing user data before replacing the app. The notebook works without a dictionary. For optional dictionary lookup, provide lawfully obtained compatible local XML and headline indexes at ~/Desktop/Lexi/Dictionary/DAIJISEN.J/{Contents,Headline}; set LEXI_DICTIONARY_PATH to use another location. Copy Scripts/daijisen_parser.py into the dictionary root when using the prebuilt app. Both headline.headlinestore.tsv and short-headline.headlinestore.tsv are required. No commercial dictionary resources are distributed here.
+Copy the configuration using the MCP icon. The bundled LexiMCP executable uses stdio. The lexi_dictionary_source tool accepts get, connect (absolute path), or disconnect, without requiring the GUI.
 
-Data lives in ~/Library/Application Support/Lexi/Lexi.sqlite. The bundled MCP executable is in Lexi.app/Contents/Resources/LexiMCP; use the app's MCP toolbar button to copy configuration, or point your client to that executable with --db and the database path.
+## Build
 
-## Testing
+Install Xcode and Python 3, then run bash install.command. Existing data is backed up before app installation.
 
-```sh
-swift test --build-system native --jobs 2
-swift build --build-system native --jobs 2 -c release --product LexiMCP
-LEXI_MCP_BINARY="$(swift build --build-system native -c release --show-bin-path)/LexiMCP" python3 -m unittest discover -s Tests -p 'test_*.py'
-```
+To correct classifications in a pre-3.6 database, quit Lexi and its MCP clients, then run the included Scripts/repair_dictionary_sections.py with --db, --apply and --backup (a new backup path).
 
-Tests requiring optional real dictionary resources or a disposable database fixture may skip. Never point a test fixture at a live database.
-
-This public source snapshot excludes personal vocabulary, notes, database backups, imported spreadsheets, private development history and third-party dictionary files. No additional redistribution license is declared.
+No personal records or commercial dictionary resources are included.

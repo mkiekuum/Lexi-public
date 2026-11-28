@@ -32,7 +32,9 @@ public struct LexiPreferences: Codable, Equatable, Sendable {
     }
 
     public static func mcpConfiguration(for databaseURL: URL) throws -> String {
-        let executable = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/lexi-mcp")
+        let standalone = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin/lexi-mcp")
+        let bundled = LexiPaths.enclosingApplication?.resourceURL?.appendingPathComponent("LexiMCP")
+        let executable = bundled.flatMap { FileManager.default.isExecutableFile(atPath: $0.path) ? $0 : nil } ?? standalone
         let data = try JSONSerialization.data(withJSONObject: ["mcpServers": ["lexi": [
             "command": executable.path, "args": ["--db", databaseURL.path]
         ]]], options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])

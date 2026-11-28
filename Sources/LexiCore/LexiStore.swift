@@ -310,7 +310,18 @@ public final class LexiStore {
             FROM entries e
             WHERE \(clauses.joined(separator: " AND "))
             """, values)
-        let folderRows = try db.query("SELECT ef.entry_id,ef.folder_id FROM entry_folders ef JOIN entries e ON e.id=ef.entry_id WHERE e.archive_version IS NULL")
+        let folderRows = try db.query("SELECT ef.entry_id,ef.folder_id,e.title FROM entry_folders ef JOIN entries e ON e.id=ef.entry_id WHERE e.archive_version IS NULL")
+        let duplicateRows = try db.query("SELECT title,count(*) AS n FROM entries WHERE archive_version IS NULL GROUP BY title HAVING count(*)>1")
+        let duplicates = Dictionary(uniqueKeysWithValues: duplicateRows.compactMap { row -> (Data, Int)? in
+            guard let title = row["title"]?.string, let count = row["n"]?.double else { return nil }
+            return (Data(title.utf8), Int(count))
+        })
+        var folderTitleCounts: [Data: [String: Int]] = [:]
+        for row in folderRows {
+            if let folder = row["folder_id"]?.string, let title = row["title"]?.string, duplicates[Data(title.utf8)] != nil {
+                folderTitleCounts[Data(title.utf8), default: [:]][folder, default: 0] += 1
+            }
+        }
         var folderIDsByEntry: [String: [String]] = [:]
         for row in folderRows {
             if let entryID = row["entry_id"]?.string, let folderID = row["folder_id"]?.string {
@@ -330,7 +341,11 @@ public final class LexiStore {
                 updatedAt: row["updated_at"]?.double ?? 0,
                 folderIDs: folderIDsByEntry[row["id"]?.string ?? ""] ?? [],
                 hasDictionary: (row["has_dictionary"]?.double ?? 0) != 0,
-                hasNote: (row["has_note"]?.double ?? 0) != 0
+                hasNote: (row["has_note"]?.double ?? 0) != 0,
+                sameTitleCount: duplicates[Data((row["title"]?.string ?? "").utf8)],
+                sameTitleInFolderCounts: folderTitleCounts[Data((row["title"]?.string ?? "").utf8)]?.filter {
+                    $0.value > 1 && (folderIDsByEntry[row["id"]?.string ?? ""] ?? []).contains($0.key)
+                }
             )
         }
         // Normalize each reading once instead of twice per sorting comparison.

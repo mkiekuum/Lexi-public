@@ -57,7 +57,7 @@ public extension DictionaryContentProvider {
 
 public actor DictionaryRegistry: DictionaryContentProvider {
     private let providers: [any DictionaryContentProvider]
-    public init(providers: [any DictionaryContentProvider] = [LocalDictionaryProvider()]) {
+    public init(providers: [any DictionaryContentProvider] = []) {
         self.providers = providers
     }
     public func matches(for entry: Entry) async throws -> [DictionaryMatch] {
@@ -84,8 +84,8 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
     private var exactTitleFingerprint: String?
 
     public init(
-        contentsDirectory: URL = LexiPaths.dictionaryContentsURL,
-        parserURL: URL? = LexiPaths.dictionaryParserURL,
+        contentsDirectory: URL,
+        parserURL: URL? = DictionaryParserResource.locate(),
         pythonURL: URL? = nil,
         dictionaryName: String = "デジタル大辞泉"
     ) {

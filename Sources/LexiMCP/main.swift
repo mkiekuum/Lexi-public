@@ -181,7 +181,7 @@ private final class MCPServer {
 
     init(databaseURL: URL) throws {
         store = try LexiStore(url: databaseURL)
-        dictionaryProvider = DictionaryRegistry()
+        dictionaryProvider = ConfiguredDictionaryProvider(databaseURL: databaseURL)
         let configuredLogPath = ProcessInfo.processInfo.environment["LEXI_MCP_LOG_PATH"]
         let logs = configuredLogPath.map { URL(fileURLWithPath: $0).deletingLastPathComponent() }
             ?? FileManager.default.homeDirectoryForCurrentUser
@@ -223,7 +223,7 @@ private final class MCPServer {
             return response(request.id, result: [
                 "protocolVersion": "2024-11-05",
                 "capabilities": ["tools": ["listChanged": false]],
-                "serverInfo": ["name": "lexi-local", "version": "3.3.0"]
+                "serverInfo": ["name": "lexi-local", "version": "3.6.0"]
             ])
         case "ping":
             return response(request.id, result: [String: String]())
@@ -276,11 +276,12 @@ private final class MCPServer {
         switch name {
         case "lexi_status":
             let entries = try store.listEntrySummaries()
+            let source = try DictionarySourceConfiguration.load(for: store.url)
             return [
-                "version": "3.3.0", "transport": "stdio", "database": store.url.path,
+                "version": "3.6.0", "transport": "stdio", "database": store.url.path,
                 "entry_count": entries.count, "folder_count": try store.listFolders().count,
-                "dictionary_available": FileManager.default.fileExists(atPath: LexiPaths.dictionaryContentsURL.path),
-                "dictionary_directory": LexiPaths.localDictionaryDirectoryURL.path,
+                "dictionary_available": source.available,
+                "dictionary_directory": source.directory as Any? ?? NSNull(),
                 "tool_count": Self.toolDefinitions.count,
                 "configuration": try LexiPreferences.mcpConfiguration(for: store.url)
             ] as [String: Any]
@@ -294,6 +295,26 @@ private final class MCPServer {
                 try preferences.save(for: store.url)
             }
             return preferences
+        case "lexi_dictionary_source":
+            var source = try DictionarySourceConfiguration.load(for: store.url)
+            let action = arguments["action"]?.stringValue ?? "get"
+            if action != "connect", arguments["path"] != nil {
+                throw LexiError.input("path は connect の場合のみ指定できます")
+            }
+            switch action {
+            case "get": break
+            case "connect":
+                let url = try absoluteURL(required(arguments, "path"))
+                source = DictionarySourceConfiguration(directory: try DictionarySourceConfiguration.resolve(url).path)
+                try source.save(for: store.url)
+            case "disconnect":
+                source = DictionarySourceConfiguration()
+                try source.save(for: store.url)
+            default: throw LexiError.input("不明な操作です")
+            }
+            return ["directory": source.directory as Any? ?? NSNull(), "available": source.available,
+                    "state": source.available ? "connected" : (source.directory == nil ? "disconnected" : "missing"),
+                    "format": "DAIJISEN_XML_TSV"] as [String: Any]
         case "lexi_backup":
             let path = try absoluteURL(required(arguments, "path"))
             try store.backup(to: path)
@@ -964,6 +985,10 @@ private final class MCPServer {
         tool("lexi_status", "ローカルMCPの版、データ件数、辞典の利用可否とクライアント設定を取得します。", [:], []),
         tool("lexi_preferences", "外観を読み取り、必要なら light または dark に変更します。GUIにも反映されます。", [
             "appearance": ["type": "string", "enum": ["light", "dark"]]
+        ], []),
+        tool("lexi_dictionary_source", "辞典の状態確認(get)、接続・変更(connect: pathに絶対パス)、解除(disconnect)。GUI不要。保存済み本文は変更しません。", [
+            "action": ["type": "string", "enum": ["get", "connect", "disconnect"]],
+            "path": optionalString
         ], []),
         tool("lexi_backup", "SQLiteの整合性を保つローカルバックアップを作成します。既存ファイルは上書きしません。", [
             "path": stringSchema
