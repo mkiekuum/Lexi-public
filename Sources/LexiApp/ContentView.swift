@@ -104,6 +104,9 @@ struct ContentView: View {
             }
         }
         .ignoresSafeArea(.container, edges: .top)
+        .overlayPreferenceValue(BadgeTooltipPreference.self) { tip in
+            if let tip { BadgeTooltipOverlay(tip: tip) }
+        }
         .tint(LexiTheme.accent)
         .background(LexiTheme.contentBackground)
         .preferredColorScheme(model.appearance == "dark" ? .dark : .light)
@@ -792,18 +795,16 @@ struct EntryListRow: View {
         }
     }
 
-    private var rowHelp: String {
-        var descriptions = [entry.fullTitle.isEmpty ? entry.title : entry.fullTitle]
-        if entry.belongsToMultipleFolders {
-            descriptions.append("所属フォルダ:\n" + folderNames.joined(separator: "\n"))
+    private var folderBadgeText: String {
+        "所属フォルダ：\(entry.folderCount)件\n" + folderNames.joined(separator: "\n")
+    }
+
+    private var duplicateBadgeText: String {
+        var lines = ["同名項目：\(entry.duplicateCount)件"]
+        for (id, count) in (entry.sameTitleInFolderCounts ?? [:]).sorted(by: { $0.key < $1.key }) {
+            lines.append("\(model.folderPath(id))：\(count)件")
         }
-        if entry.duplicateCount > 1 {
-            descriptions.append("同名項目：\(entry.duplicateCount)件（別々の項目）")
-            for (id, count) in (entry.sameTitleInFolderCounts ?? [:]).sorted(by: { $0.key < $1.key }) {
-                descriptions.append("\(model.folderPath(id))：同名 \(count)件")
-            }
-        }
-        return descriptions.joined(separator: "\n")
+        return lines.joined(separator: "\n")
     }
 
     var body: some View {
@@ -816,12 +817,13 @@ struct EntryListRow: View {
                     Text(DictionaryDisplayText.clean(entry.title))
                         .lexiFont(LexiTypography.body, weight: .medium)
                         .lineLimit(1)
+                        .help(entry.fullTitle.isEmpty ? entry.title : entry.fullTitle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if entry.belongsToMultipleFolders {
-                        badge("folder", count: entry.folderCount, label: "所属フォルダ")
+                        badge("folder", count: entry.folderCount, detail: folderBadgeText)
                     }
                     if entry.duplicateCount > 1 {
-                        badge("square.on.square", count: entry.duplicateCount, label: "同名項目")
+                        badge("square.on.square", count: entry.duplicateCount, detail: duplicateBadgeText)
                     }
                 }
                 .padding(.leading, 9)
@@ -833,7 +835,6 @@ struct EntryListRow: View {
             .contentShape(Rectangle())
             .accessibilityIdentifier("entry-\(entry.id)")
             .accessibilityLabel(DictionaryDisplayText.clean(entry.title) + (entry.belongsToMultipleFolders ? "、所属フォルダ、\(entry.folderCount)件" : "") + (entry.duplicateCount > 1 ? "、同名項目、\(entry.duplicateCount)件" : ""))
-            .help(rowHelp)
             Button {
                 model.openMonokakidoSearch(DictionaryDisplayText.clean(entry.title), type: entry.type)
             } label: {
@@ -855,14 +856,14 @@ struct EntryListRow: View {
         .contentShape(Rectangle())
     }
 
-    private func badge(_ symbol: String, count: Int, label: String) -> some View {
+    private func badge(_ symbol: String, count: Int, detail: String) -> some View {
         HStack(spacing: 2) {
             Image(systemName: symbol).font(.system(size: 10, weight: .medium))
             Text(String(count)).monospacedDigit().font(.system(size: 10, weight: .medium))
         }.foregroundStyle(LexiTheme.accent)
             .padding(.horizontal, 4).padding(.vertical, 3)
             .background(LexiTheme.subtleFill, in: RoundedRectangle(cornerRadius: 4))
-            .help("\(label)：\(count)件")
+            .modifier(InstantBadgeTooltip(text: detail))
             .accessibilityHidden(true)
     }
 

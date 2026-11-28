@@ -418,6 +418,11 @@ public enum LexiPaths {
         return nil
     }
     public static var databaseURL: URL {
+        if enclosingApplication?.bundleIdentifier == "app.local.lexi.preview370" {
+            return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("Lexi-3.7.0-Preview", isDirectory: true)
+                .appendingPathComponent("Lexi.sqlite")
+        }
         if enclosingApplication?.bundleIdentifier == "app.local.lexi.preview360" {
             return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("Lexi-3.6.0-Preview", isDirectory: true)

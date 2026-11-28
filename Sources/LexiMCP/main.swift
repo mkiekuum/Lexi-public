@@ -223,7 +223,7 @@ private final class MCPServer {
             return response(request.id, result: [
                 "protocolVersion": "2024-11-05",
                 "capabilities": ["tools": ["listChanged": false]],
-                "serverInfo": ["name": "lexi-local", "version": "3.6.0"]
+                "serverInfo": ["name": "lexi-local", "version": "3.7.0"]
             ])
         case "ping":
             return response(request.id, result: [String: String]())
@@ -278,9 +278,10 @@ private final class MCPServer {
             let entries = try store.listEntrySummaries()
             let source = try DictionarySourceConfiguration.load(for: store.url)
             return [
-                "version": "3.6.0", "transport": "stdio", "database": store.url.path,
+                "version": "3.7.0", "transport": "stdio", "database": store.url.path,
                 "entry_count": entries.count, "folder_count": try store.listFolders().count,
                 "dictionary_available": source.available,
+                "dictionary_format": source.format as Any? ?? NSNull(),
                 "dictionary_directory": source.directory as Any? ?? NSNull(),
                 "tool_count": Self.toolDefinitions.count,
                 "configuration": try LexiPreferences.mcpConfiguration(for: store.url)
@@ -314,7 +315,7 @@ private final class MCPServer {
             }
             return ["directory": source.directory as Any? ?? NSNull(), "available": source.available,
                     "state": source.available ? "connected" : (source.directory == nil ? "disconnected" : "missing"),
-                    "format": "DAIJISEN_XML_TSV"] as [String: Any]
+                    "format": source.format as Any? ?? NSNull()] as [String: Any]
         case "lexi_backup":
             let path = try absoluteURL(required(arguments, "path"))
             try store.backup(to: path)

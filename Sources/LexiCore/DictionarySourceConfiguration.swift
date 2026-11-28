@@ -23,14 +23,31 @@ public struct DictionarySourceConfiguration: Codable, Equatable, Sendable {
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(self).write(to: file, options: .atomic)
     }
+    public static var installedDaijisen: URL? {
+        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(
+            "Library/Group Containers/group.jp.monokakido.Dictionaries/Library/Application Support/com.dictionarystore/dictionaries/DAIJISEN2",
+            isDirectory: true)
+        return NativeDictionaryResource.recognizes(url) ? url : nil
+    }
     public static func resolve(_ selected: URL) throws -> URL {
         let root = selected.standardizedFileURL.resolvingSymlinksInPath()
-        var candidates = [root, root.appendingPathComponent("DAIJISEN.J", isDirectory: true)]
+        var candidates = [root, root.appendingPathComponent("DAIJISEN.J", isDirectory: true),
+                          root.appendingPathComponent("DAIJISEN2", isDirectory: true)]
         if ["Contents", "Headline"].contains(root.lastPathComponent) {
             candidates.append(root.deletingLastPathComponent())
         }
-        for candidate in candidates where isCompatible(candidate) && hasRecognizedIndexes(candidate) { return candidate }
-        throw LexiError.input("対応する辞典フォルダが見つかりません。デジタル大辞泉形式の Contents と Headline（2つのTSV索引）を含むフォルダを選択してください。")
+        if ["Contents", "Shogakukan-DJS", "contents", "headline"].contains(root.lastPathComponent) {
+            var parent = root
+            for _ in 0..<3 { parent = parent.deletingLastPathComponent(); candidates.append(parent) }
+        }
+        for candidate in candidates {
+            if isCompatible(candidate) && hasRecognizedIndexes(candidate) { return candidate }
+            if NativeDictionaryResource.recognizes(candidate) {
+                try NativeDictionaryResource.probe(candidate)
+                return candidate
+            }
+        }
+        throw LexiError.input("対応する辞典フォルダが見つかりません。")
     }
     public static func isCompatible(_ root: URL) -> Bool {
         let fm = FileManager.default
@@ -66,7 +83,16 @@ public struct DictionarySourceConfiguration: Codable, Equatable, Sendable {
         return true
     }
     public var root: URL? { directory.map { URL(fileURLWithPath: $0, isDirectory: true) } }
-    public var available: Bool { root.map(Self.isCompatible) ?? false }
+    public var format: String? {
+        guard let root else { return nil }
+        if NativeDictionaryResource.recognizes(root) { return "MONOKAKIDO_DAIJISEN2" }
+        if Self.isCompatible(root) { return "DAIJISEN_XML_TSV" }
+        return nil
+    }
+    public var available: Bool {
+        guard let format else { return false }
+        return !format.hasPrefix("MONOKAKIDO_") || NativeDictionaryResource.executable() != nil
+    }
 }
 
 /// Resolve a trusted parser shipped with Lexi, never executable code supplied by a dictionary folder.
@@ -112,7 +138,8 @@ public actor ConfiguredDictionaryProvider: DictionaryContentProvider {
         let root = try configuration()
         if activeRoot != root || activeProvider == nil {
             activeRoot = root
-            activeProvider = LocalDictionaryProvider(contentsDirectory: root.appendingPathComponent("Contents"), parserURL: parser)
+            activeProvider = LocalDictionaryProvider(contentsDirectory: root.appendingPathComponent("Contents"), parserURL: parser,
+                                                     nativeProductURL: NativeDictionaryResource.recognizes(root) ? root : nil)
         }
         guard let activeProvider else { throw DictionarySourceError.identityMissing }
         let result = try await activeProvider.matches(for: entry)

@@ -3,8 +3,8 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-VERSION="3.6.0"
-BUILD_NUMBER="360"
+VERSION="3.7.0"
+BUILD_NUMBER="371"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
   echo "macOS上で実行してください。" >&2; exit 1
@@ -81,11 +81,20 @@ fi
 cp "$ROOT/Assets/LexiEmblem.png" "$STAGE/Contents/Resources/LexiEmblem.png"
 cp "$ROOT/Scripts/daijisen_parser.py" "$STAGE/Contents/Resources/daijisen_parser.py"
 cp "$ROOT/Scripts/repair_dictionary_sections.py" "$STAGE/Contents/Resources/repair_dictionary_sections.py"
+bash "$ROOT/Scripts/build-native-dictionary.sh"
+NATIVE_BUILD_DIR="${LEXI_NATIVE_BUILD_DIR:-$ROOT/.build-native}"
+cp "$NATIVE_BUILD_DIR/build/lexi-dictionary-reader" "$STAGE/Contents/Resources/lexi-dictionary-reader"
+cp "$ROOT/NativeDictionary/LICENSE" "$STAGE/Contents/Resources/NativeDictionary-LICENSE.txt"
+cp "$ROOT/NativeDictionary/README.md" "$STAGE/Contents/Resources/NativeDictionary-README.md"
+mkdir -p "$STAGE/Contents/Resources/NativeDictionarySource"
+cp "$ROOT/NativeDictionary/main.cpp" "$ROOT/NativeDictionary/CMakeLists.txt" "$STAGE/Contents/Resources/NativeDictionarySource/"
+
 plutil -lint "$STAGE/Contents/Info.plist"
 
 printf '\n[5/7] 署名とパッケージを確認しています…\n'
 if command -v codesign >/dev/null 2>&1; then
   codesign --force --sign - "$STAGE/Contents/Resources/LexiMCP"
+  codesign --force --sign - "$STAGE/Contents/Resources/lexi-dictionary-reader"
   codesign --force --sign - "$STAGE"
   codesign --verify --deep "$STAGE"
 fi
@@ -139,6 +148,7 @@ printf '\n[7/7] デスクトップにインストールしています…\n'
 # Keep existing user-selected dictionary files untouched. Install the parser with Lexi itself.
 mkdir -p "$HOME/.local/share/lexi"
 cp "$ROOT/Scripts/daijisen_parser.py" "$HOME/.local/share/lexi/daijisen_parser.py"
+cp "$STAGE/Contents/Resources/lexi-dictionary-reader" "$HOME/.local/share/lexi/lexi-dictionary-reader"
 python3 "$HOME/.local/share/lexi/daijisen_parser.py" --help >/dev/null
 # Migrate only an already-existing legacy dictionary, without modifying its contents.
 python3 - "$INSTALL_ROOT/Dictionary/DAIJISEN.J" "$DATA.dictionary-source.json" <<'PYCONFIG'

@@ -128,28 +128,7 @@ struct EntryDetailView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
-            if let summary = model.entries.first(where: { $0.id == entry.id }) {
-                let folders = entry.folderIDs.map { model.folderPath($0) }.sorted()
-                let duplicateFolders = (summary.sameTitleInFolderCounts ?? [:]).sorted { $0.key < $1.key }
-                if summary.belongsToMultipleFolders || summary.duplicateCount > 1 {
-                    HStack(spacing: 10) {
-                        if summary.belongsToMultipleFolders {
-                            Label("所属 \(folders.count)フォルダ", systemImage: "folder")
-                                .help(folders.joined(separator: "\n"))
-                        }
-                        if summary.duplicateCount > 1 {
-                            Label("同名 \(summary.duplicateCount)件", systemImage: "square.on.square")
-                                .help("独立した項目です。\n" + duplicateFolders.map { "\(model.folderPath($0.key))：\($0.value)件" }.joined(separator: "\n"))
-                        }
-                    }.lexiFont(LexiTypography.caption).foregroundStyle(LexiTheme.accent)
-                    .accessibilityIdentifier("entryMultiplicity")
-                    if !duplicateFolders.isEmpty {
-                        Text(duplicateFolders.map { "\(model.folderPath($0.key))：同名 \($0.value)件" }.joined(separator: " / "))
-                            .lexiFont(LexiTypography.caption).foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-            }
+
         }.multilineTextAlignment(.center)
     }
 

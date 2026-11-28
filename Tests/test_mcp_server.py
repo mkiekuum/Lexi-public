@@ -126,7 +126,7 @@ class MCPServerTests(unittest.TestCase):
     def test_status_and_two_mode_preferences_are_database_scoped(self):
         status, error = self.call("lexi_status")
         self.assertIsNone(error)
-        self.assertEqual(status["version"], "3.6.0")
+        self.assertEqual(status["version"], "3.7.0")
         self.assertEqual(status["transport"], "stdio")
         self.assertEqual(status["tool_count"], 23)
         configuration = json.loads(status["configuration"])["mcpServers"]["lexi"]

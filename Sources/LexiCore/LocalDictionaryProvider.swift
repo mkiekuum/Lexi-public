@@ -78,19 +78,25 @@ public actor DictionaryRegistry: DictionaryContentProvider {
 public actor LocalDictionaryProvider: DictionaryContentProvider {
     private let dictionaryName: String
     private let contentsDirectory: URL
+    private let nativeProductURL: URL?
     private let parserURL: URL
     private let pythonURL: URL?
     private var exactTitleCache: [String: [DictionaryMatch]]?
+    private var exactTitleDisk: SQLiteConnection?
     private var exactTitleFingerprint: String?
 
     public init(
         contentsDirectory: URL,
         parserURL: URL? = DictionaryParserResource.locate(),
         pythonURL: URL? = nil,
-        dictionaryName: String = "デジタル大辞泉"
+        dictionaryName: String = "デジタル大辞泉",
+        nativeProductURL: URL? = nil
     ) {
-        self.dictionaryName = dictionaryName
         self.contentsDirectory = contentsDirectory
+        let parent = contentsDirectory.deletingLastPathComponent()
+        let native = nativeProductURL ?? (NativeDictionaryResource.recognizes(parent) ? parent : nil)
+        self.nativeProductURL = native
+        self.dictionaryName = dictionaryName
         self.parserURL = parserURL ?? URL(fileURLWithPath: "/")
         self.pythonURL = pythonURL ?? Self.findPython()
     }
@@ -107,6 +113,7 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
         let sourceSubentryID = parts[1]
         let contentsDirectory = self.contentsDirectory
         let parserURL = self.parserURL
+        let nativeProductURL = self.nativeProductURL
         let pythonURL = self.pythonURL
         let cancellation = ProcessCancellationBox()
         return try await withTaskCancellationHandler {
@@ -118,6 +125,7 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
                     subentryID: sourceSubentryID,
                     sourceKey: sourceKey,
                     contentsDirectory: contentsDirectory,
+                    nativeProductURL: nativeProductURL,
                     parserURL: parserURL,
                     pythonURL: pythonURL,
                     cancellation: cancellation
@@ -134,7 +142,8 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
     }
 
     private func exactMatches(for entry: Entry) throws -> [DictionaryMatch] {
-        let root = contentsDirectory.deletingLastPathComponent().appendingPathComponent("Headline")
+        let root = try nativeProductURL.map { try NativeDictionaryResource.headlineDirectory($0) }
+            ?? contentsDirectory.deletingLastPathComponent().appendingPathComponent("Headline")
         let files = ["headline.headlinestore.tsv", "short-headline.headlinestore.tsv"]
         func fingerprint() throws -> String {
             var fields = ["lexi-exact-short-v3", root.path, dictionaryName]
@@ -149,12 +158,15 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
             return SHA256.hash(data: Data(fields.joined(separator: "\n").utf8)).map { String(format: "%02x", $0) }.joined()
         }
         let signature = try fingerprint()
-        if exactTitleCache == nil || exactTitleFingerprint != signature {
+        if (exactTitleCache == nil && exactTitleDisk == nil) || exactTitleFingerprint != signature {
+            exactTitleCache = nil
+            exactTitleDisk = nil
             let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent("Lexi/DictionaryIndex")
             let cache = dir?.appendingPathComponent(signature + ".json")
-            if let cache, let data = try? Data(contentsOf: cache),
-               let decoded = try? JSONDecoder().decode([String: [DictionaryMatch]].self, from: data) {
-                exactTitleCache = decoded
+            let disk = dir?.appendingPathComponent(signature + ".sqlite")
+            if let disk, let connection = try? SQLiteConnection(path: disk.path, readOnly: true),
+               (try? connection.scalar("SELECT value FROM metadata WHERE key='complete'")) == .text("1") {
+                exactTitleDisk = connection
             } else {
                 func read(_ file: String, consume: @escaping (String, String) -> Void) throws {
                     let url = root.appendingPathComponent(file)
@@ -182,16 +194,35 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
                 }
                 guard try fingerprint() == signature else { throw DictionarySourceError.resourceUnavailable(root.path) }
                 exactTitleCache = index
-                if let dir, let cache, let data = try? JSONEncoder().encode(index) {
-                    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-                    try? data.write(to: cache, options: .atomic)
+                if let dir, let disk {
+                    let temp = dir.appendingPathComponent(".index-" + UUID().uuidString + ".sqlite")
+                    do {
+                        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+                        try Self.writeIndex(index, to: temp)
+                        do { try FileManager.default.moveItem(at: temp, to: disk) }
+                        catch { if !FileManager.default.fileExists(atPath: disk.path) { throw error } }
+                        if let connection = try? SQLiteConnection(path: disk.path, readOnly: true),
+                           (try? connection.scalar("SELECT value FROM metadata WHERE key='complete'")) == .text("1") {
+                            exactTitleDisk = connection
+                            exactTitleCache = nil
+                        }
+                        if let cache { try? FileManager.default.removeItem(at: cache) }
+                    } catch { /* The in-memory index remains usable. */ }
+                    try? FileManager.default.removeItem(at: temp)
                 }
             }
             exactTitleFingerprint = signature
         }
         // No kana folding, partial lookup, full-title fallback, or legacy source ID.
         let shortTitle = DictionaryDisplayText.clean(entry.title)
-        return (exactTitleCache?[shortTitle] ?? []).filter { candidate in
+        let candidates: [DictionaryMatch]
+        if let exactTitleDisk {
+            candidates = try exactTitleDisk.query("SELECT heading,locator FROM matches WHERE title=? COLLATE BINARY", [.text(shortTitle)]).compactMap { row in
+                guard let heading = row["heading"]?.string, let locator = row["locator"]?.string else { return nil }
+                return DictionaryMatch(dictionary: dictionaryName, shortTitle: shortTitle, heading: heading, locator: locator)
+            }
+        } else { candidates = exactTitleCache?[shortTitle] ?? [] }
+        return candidates.filter { candidate in
             guard candidate.shortTitle.utf8.elementsEqual(shortTitle.utf8) else { return false }
             let suffix = candidate.locator.suffix(4)
             switch entry.type {
@@ -202,12 +233,38 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
         }.sorted { ($0.heading, $0.locator) < ($1.heading, $1.locator) }
     }
 
+    private nonisolated static func writeIndex(_ index: [String: [DictionaryMatch]], to url: URL) throws {
+        let db = try SQLiteConnection(path: url.path)
+        try db.execute("PRAGMA journal_mode=DELETE")
+        try db.execute("CREATE TABLE matches(title TEXT,heading TEXT,locator TEXT)")
+        try db.execute("CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT)")
+        try db.transaction {
+            var values: [SQLValue] = []
+            func flush() throws {
+                guard !values.isEmpty else { return }
+                let placeholders = Array(repeating: "(?,?,?)", count: values.count / 3).joined(separator: ",")
+                try db.execute("INSERT INTO matches VALUES " + placeholders, values)
+                values.removeAll(keepingCapacity: true)
+            }
+            for matches in index.values {
+                for match in matches {
+                    values += [.text(match.shortTitle), .text(match.heading), .text(match.locator)]
+                    if values.count >= 900 { try flush(); try Task.checkCancellation() }
+                }
+            }
+            try flush()
+            try db.execute("CREATE INDEX match_title ON matches(title)")
+            try db.execute("INSERT INTO metadata VALUES ('complete','1')")
+        }
+    }
+
     private nonisolated static func retrieveSynchronously(
         entryType: EntryType,
         sourceEntryID: String,
         subentryID: String,
         sourceKey: String,
         contentsDirectory: URL,
+        nativeProductURL: URL?,
         parserURL: URL,
         pythonURL: URL?,
         cancellation: ProcessCancellationBox
@@ -219,6 +276,7 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
                 subentryID: "0000",
                 expectedKind: .headword,
                 contentsDirectory: contentsDirectory,
+                nativeProductURL: nativeProductURL,
                 parserURL: parserURL,
                 pythonURL: pythonURL,
                 cancellation: cancellation
@@ -241,6 +299,7 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
                 subentryID: subentryID,
                 expectedKind: entryType,
                 contentsDirectory: contentsDirectory,
+                nativeProductURL: nativeProductURL,
                 parserURL: parserURL,
                 pythonURL: pythonURL,
                 cancellation: cancellation
@@ -254,6 +313,7 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
         subentryID: String,
         expectedKind: EntryType,
         contentsDirectory: URL,
+        nativeProductURL: URL?,
         parserURL: URL,
         pythonURL: URL?,
         cancellation: ProcessCancellationBox
@@ -268,8 +328,17 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
             throw DictionarySourceError.parserUnavailable
         }
         let sourceKey = "\(sourceEntryID)-\(subentryID)"
-        let xmlURL = contentsDirectory.appendingPathComponent("\(sourceEntryID).xml")
-        guard FileManager.default.fileExists(atPath: xmlURL.path) else {
+        var xmlURL = contentsDirectory.appendingPathComponent("\(sourceEntryID).xml")
+        var tempDirectory: URL?
+        defer { if let tempDirectory { try? FileManager.default.removeItem(at: tempDirectory) } }
+        if let nativeProductURL {
+            let data = try NativeDictionaryResource.readArticle(nativeProductURL, pageID: sourceEntryID, cancellation: cancellation)
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("lexi-article-" + UUID().uuidString)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+            tempDirectory = dir
+            xmlURL = dir.appendingPathComponent("article.xml")
+            try data.write(to: xmlURL, options: .atomic)
+        } else if !FileManager.default.fileExists(atPath: xmlURL.path) {
             throw DictionarySourceError.resourceUnavailable(xmlURL.path)
         }
         let process = Process()
@@ -333,7 +402,7 @@ public actor LocalDictionaryProvider: DictionaryContentProvider {
     }
 }
 
-private final class ProcessCancellationBox: @unchecked Sendable {
+final class ProcessCancellationBox: @unchecked Sendable {
     private let lock = NSLock()
     private var process: Process?
     private var cancelled = false

@@ -233,7 +233,7 @@ final class LexiViewModel: ObservableObject {
         panel.canChooseFiles = false
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
-        if let root = dictionarySource.root { panel.directoryURL = root.deletingLastPathComponent() }
+        if let root = dictionarySource.root ?? DictionarySourceConfiguration.installedDaijisen { panel.directoryURL = root.deletingLastPathComponent() }
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let selected = try DictionarySourceConfiguration.resolve(url)
